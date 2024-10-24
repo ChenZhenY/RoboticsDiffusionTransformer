@@ -307,3 +307,103 @@ class RoboticDiffusionTransformerModel(object):
         trajectory = self._unformat_action_to_joint(trajectory).to(torch.float32)
 
         return trajectory
+
+###########################################################
+
+# The indices that the raw vector should be mapped to in the unified action vector
+FRANKA_STATE_INDICES = [
+    STATE_VEC_IDX_MAPPING[f"arm_joint_{i}_pos"] for i in range(6)
+] + [
+    STATE_VEC_IDX_MAPPING[f"gripper_open"]
+]
+
+""" NOTE from RDT team
+1. Check state_vec.py for action space definition
+2. ID: For single arm, fill the state in the right arm part
+3. Rotation: We use 6D representation for EEF rotation. If your action space contains EEF rotation (angle or quaternion), please refer to this file for conversion. We note that this mapping is not reversible. Different Euler angles may be equivalent and correspond to the same 6D representation.
+4: Unit: Using International unit. No physical quantities (except the gripper width) are normalized during pre-training. This can preserve each physical quantity's meaning, thereby promoting generalization across robots. Therefore, we encourage you not to normalize any physical quantities but to choose appropriate units for them. Generally, we use the International System of Units, which ensures that most values fall within [-1,1]. As an exception, we perform min-max normalization on the gripper width to [0,1].
+5. Image: When you feed the images into step(), remember the order MUST be [ext_{t-1}, right_wrist_{t-1}, left_wrist_{t-1}, ext_{t}, right_wrist_{t}, left_wrist_{t}].
+6. Control Freq: need to match control freq
+"""
+
+""" NOTE TODO: from Zhenyang work
+1. Add EEF robotaion. Assuming no rotation at the moment.
+2. Add observation of velocity etc. Maybe more info will be better? But can also cause underfit
+"""
+class RoboticDiffusionTransformerModelFranka(RoboticDiffusionTransformerModel):
+    """
+    RDT for Franka arm inference for robosuite.
+    [join0-joint6, gripper] TODO: check unit
+    """
+    
+    def __init__(
+        self,
+        args,
+        device='cuda',
+        dtype=torch.bfloat16,
+        image_size=None,
+        control_frequency=25,
+        pretrained=None,
+        pretrained_vision_encoder_name_or_path=None
+        ):
+        super().__init__(args, device, dtype, image_size, control_frequency, pretrained, pretrained_vision_encoder_name_or_path)
+
+
+    def _format_joint_to_state(self, joints):
+        """
+        Format the joint proprioception into the unified action vector.
+
+        Args:
+            joints (torch.Tensor): The joint proprioception to be formatted. 
+                qpos ([B, N, 14]).
+
+        Returns:
+            state (torch.Tensor): The formatted vector for RDT ([B, N, 128]). 
+        """
+        # Rescale the gripper to the range of [0, 1]
+        joints = joints / torch.tensor(
+            [[[1, 1, 1, 1, 1, 1, 4.7908, 1, 1, 1, 1, 1, 1, 4.7888]]],
+            device=joints.device, dtype=joints.dtype
+        )
+        
+        B, N, _ = joints.shape
+        state = torch.zeros(
+            (B, N, self.args["model"]["state_token_dim"]), 
+            device=joints.device, dtype=joints.dtype
+        )
+        # Fill into the unified state vector
+        state[:, :, AGILEX_STATE_INDICES] = joints
+        # Assemble the mask indicating each dimension's availability 
+        state_elem_mask = torch.zeros(
+            (B, self.args["model"]["state_token_dim"]),
+            device=joints.device, dtype=joints.dtype
+        )
+        state_elem_mask[:, AGILEX_STATE_INDICES] = 1
+        return state, state_elem_mask
+
+    def _unformat_action_to_joint(self, action):
+        """
+        Unformat the unified action vector into the joint action to be executed.
+
+        Args:
+            action (torch.Tensor): The unified action vector to be unformatted. 
+                ([B, N, 128])
+        
+        Returns:
+            joints (torch.Tensor): The unformatted robot joint action. 
+                qpos ([B, N, 14]).
+        """
+        action_indices = AGILEX_STATE_INDICES
+        joints = action[:, :, action_indices]
+        
+        # Rescale the gripper back to the action range
+        # Note that the action range and proprioception range are different
+        # for Mobile ALOHA robot
+        joints = joints * torch.tensor(
+            [[[1, 1, 1, 1, 1, 1, 11.8997, 1, 1, 1, 1, 1, 1, 13.9231]]],
+            device=joints.device, dtype=joints.dtype
+        )
+        
+        return joints
+    
+    # def from_robotsuite_to_rdt(obs)
