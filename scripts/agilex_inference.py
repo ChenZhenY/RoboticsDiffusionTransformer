@@ -106,7 +106,7 @@ def get_ros_observation(args,ros_operator):
 
 # Update the observation window buffer
 def update_observation_window(args, config, ros_operator):
-    # JPEG transformation
+    # JPEG transformation, simulate the jpeg compression and decompression
     # Align with training
     def jpeg_mapping(img):
         img = cv2.imencode('.jpg', img)[1].tobytes()

@@ -312,10 +312,20 @@ class RoboticDiffusionTransformerModel(object):
 
 # The indices that the raw vector should be mapped to in the unified action vector
 FRANKA_STATE_INDICES = [
-    STATE_VEC_IDX_MAPPING[f"arm_joint_{i}_pos"] for i in range(6)
+    STATE_VEC_IDX_MAPPING[f"arm_joint_{i}_pos"] for i in range(7)
 ] + [
     STATE_VEC_IDX_MAPPING[f"gripper_open"]
 ]
+
+def create_model_franka(args, **kwargs):
+    model = RoboticDiffusionTransformerModelFranka(args, **kwargs)
+    pretrained = kwargs.get("pretrained", None)
+    if (
+        pretrained is not None 
+        and os.path.isfile(pretrained)
+    ):
+        model.load_pretrained_weights(pretrained)
+    return model
 
 """ NOTE from RDT team
 1. Check state_vec.py for action space definition
@@ -333,7 +343,7 @@ FRANKA_STATE_INDICES = [
 class RoboticDiffusionTransformerModelFranka(RoboticDiffusionTransformerModel):
     """
     RDT for Franka arm inference for robosuite.
-    [join0-joint6, gripper] TODO: check unit
+    [join0-joint6, gripper] TODO: check unit, using rad, abs pos
     """
     
     def __init__(
@@ -361,10 +371,12 @@ class RoboticDiffusionTransformerModelFranka(RoboticDiffusionTransformerModel):
             state (torch.Tensor): The formatted vector for RDT ([B, N, 128]). 
         """
         # Rescale the gripper to the range of [0, 1]
-        joints = joints / torch.tensor(
-            [[[1, 1, 1, 1, 1, 1, 4.7908, 1, 1, 1, 1, 1, 1, 4.7888]]],
-            device=joints.device, dtype=joints.dtype
-        )
+        # joints = joints / torch.tensor(
+        #     [[[1, 1, 1, 1, 1, 1, 4.7908, 1, 1, 1, 1, 1, 1, 4.7888]]],
+        #     device=joints.device, dtype=joints.dtype
+        # )
+        # TODO: check the min max value for the gripper.
+        joints = joints / torch.tensor([[1, 1, 1, 1, 1, 1, 1, 1]], device=joints.device, dtype=joints.dtype)
         
         B, N, _ = joints.shape
         state = torch.zeros(
@@ -372,13 +384,13 @@ class RoboticDiffusionTransformerModelFranka(RoboticDiffusionTransformerModel):
             device=joints.device, dtype=joints.dtype
         )
         # Fill into the unified state vector
-        state[:, :, AGILEX_STATE_INDICES] = joints
+        state[:, :, FRANKA_STATE_INDICES] = joints
         # Assemble the mask indicating each dimension's availability 
         state_elem_mask = torch.zeros(
             (B, self.args["model"]["state_token_dim"]),
             device=joints.device, dtype=joints.dtype
         )
-        state_elem_mask[:, AGILEX_STATE_INDICES] = 1
+        state_elem_mask[:, FRANKA_STATE_INDICES] = 1
         return state, state_elem_mask
 
     def _unformat_action_to_joint(self, action):
@@ -393,17 +405,12 @@ class RoboticDiffusionTransformerModelFranka(RoboticDiffusionTransformerModel):
             joints (torch.Tensor): The unformatted robot joint action. 
                 qpos ([B, N, 14]).
         """
-        action_indices = AGILEX_STATE_INDICES
+        action_indices = FRANKA_STATE_INDICES
         joints = action[:, :, action_indices]
         
         # Rescale the gripper back to the action range
         # Note that the action range and proprioception range are different
         # for Mobile ALOHA robot
-        joints = joints * torch.tensor(
-            [[[1, 1, 1, 1, 1, 1, 11.8997, 1, 1, 1, 1, 1, 1, 13.9231]]],
-            device=joints.device, dtype=joints.dtype
-        )
+        joints = joints * torch.tensor([[1, 1, 1, 1, 1, 1, 1, 1]], device=joints.device, dtype=joints.dtype)
         
         return joints
-    
-    # def from_robotsuite_to_rdt(obs)
